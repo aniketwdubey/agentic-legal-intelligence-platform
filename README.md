@@ -219,3 +219,4 @@ logging, guardrails, tests, eval, Docker, CDK). Deliberately **not** yet built:
 the Strands/AgentCore runtime swap, Lambda/SQS/SNS tool integrations, OpenTelemetry
 export + dashboard, and the LLM-as-judge answer eval. The orchestration is a thin
 custom supervisor with typed agent boundaries so those are additive, not rewrites.
+# agentic-legal-intelligence-platform
