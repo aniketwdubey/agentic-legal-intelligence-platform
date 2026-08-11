@@ -50,6 +50,68 @@ Each agent has a typed input/output contract (`src/legalintel/schemas.py`), so a
 failure is attributable to a **specific agent / step / validation rule** rather
 than one opaque prompt chain.
 
+### The agents
+
+| Agent | Input → Output | LLM? | Responsibility |
+|---|---|---|---|
+| **Planner** | `QueryRequest` → `Plan` | ✅ | Interprets intent at runtime — classifies `task_type` (research / drafting / doc_review), picks the jurisdiction, one or more `search_queries`, and the ordered `steps`. Asserts no legal proposition itself. |
+| **Retrieval** | `Plan` → `RetrievedAuthority[]` | ❌ | Runs each query through hybrid search (BM25 + dense embeddings) over the corpus, min-max fuses the two legs, and returns the top-k authorities with scores. Pure-Python — no search service. |
+| **Drafting** | question + `RetrievedAuthority[]` → `DraftAnswer` | ✅ | Composes the answer as a set of `claims`, each carrying an `authority_id` from the retrieved set and a **verbatim quote** copied from that authority's text. Insufficient context → empty claim list (→ abstention). |
+| **Validation** | `DraftAnswer` + `RetrievedAuthority[]` → `ValidationReport` | ❌ **rule-based** | Independently verifies each claim: (1) `citation_exists` — the `authority_id` is in the retrieved set; (2) the quote is a real span of that authority; (3) the claim is grounded above `grounding_threshold`. Emits per-claim verdicts + support scores. |
+| **Supervisor** | orchestrates all of the above | ❌ | Owns the control loop: validates every agent output against its schema at the boundary, applies the grounding policy, computes confidence, and binds a `trace_id` across the run. |
+
+### Supervisor control & grounding policy
+
+The supervisor is a thin, explicit state machine — not a prompt. On every hop it:
+
+- **Validates at the boundary.** Each agent output is parsed into its pydantic
+  schema, so a malformed LLM response is caught *where it was produced*, not
+  downstream as a corrupt final answer.
+- **Guards every LLM call.** Planner and drafter calls go through
+  `llm/base.py:structured()`, which enforces a timeout, retries with exponential
+  backoff, and re-validates the parsed output — a schema-invalid completion is a
+  *retryable* failure, so the model gets another attempt before anything fails.
+- **Applies the grounding policy** to the validation report to choose the status:
+  - only **verified** claims survive — any claim whose citation isn't in the
+    retrieved set, or whose quote/grounding fails, is dropped;
+  - nothing survives → **`ABSTAIN`** ("insufficient authority to answer");
+  - verified but low-confidence / high-risk → **`ESCALATE`** (human review);
+  - verified + confident → **`ANSWER`** — the answer plus *only* its verified citations.
+- **Computes confidence** from the support scores of the surviving claims, so the
+  number in the response reflects how strongly the quotes actually grounded
+  against the corpus.
+
+The upshot: **a hallucinated citation cannot reach the user by construction** — it
+is removed before the answer is assembled, and if nothing is left the system
+abstains rather than guesses.
+
+### Deployed runtime — how a live request flows
+
+The pipeline above is host- and provider-agnostic. In the deployed (Tier 2) form
+it runs behind a Lambda Function URL:
+
+```
+awscurl / scripts/call_api.py  (SigV4-signed)   # AWS_IAM auth — unsigned requests get 403
+      │
+      ▼
+Lambda Function URL ──► Container Lambda (arm64/Graviton)
+                               │
+                     AWS Lambda Web Adapter          # translates the Lambda event ⇄ HTTP
+                               │
+                        uvicorn → FastAPI  /v1/query
+                               │
+                        Supervisor pipeline
+                         ├─ Planner / Drafting ──► Amazon Bedrock (Claude Haiku 4.5, pay-per-call)
+                         └─ Retrieval          ──► legal corpus loaded from S3
+                               │
+                               ▼
+                     QueryResponse (JSON)
+```
+
+The **same Docker image** runs the tests, `docker-compose`, and Lambda — the Web
+Adapter lets ordinary uvicorn serve Lambda invocations with **zero Lambda-specific
+code** (no Mangum, no handler shim). Details: [`infra/README.md`](infra/README.md).
+
 ### Key design decisions
 
 - **Validation is rule-based, not another LLM.** Verifying a citation is a
@@ -191,13 +253,28 @@ capability.
 
 ## Provision / tear down AWS (CDK)
 
+A lean, fully destroyable data plane **plus a serverless API** — all pay-per-call
+or free, no always-on cost:
+
 ```bash
-cd infra && make install && make bootstrap   # one-time
-make deploy     # S3 corpus bucket + SSM config + least-privilege IAM role
+cd infra && make install && make bootstrap   # one-time per account/region (needs Docker)
+make deploy     # S3 corpus + SSM + least-privilege IAM + container Lambda behind a Function URL
 make destroy    # removes everything; the bucket is auto-emptied first
 ```
 
-Details and the (optional) serverless-API path: [`infra/README.md`](infra/README.md).
+`make deploy` prints an **`ApiUrl`** — a Lambda Function URL serving this same app.
+It's **`AWS_IAM`-authed** (a leaked URL can't run up a Bedrock bill), so call it
+with SigV4-signed requests:
+
+```bash
+python scripts/call_api.py "What is the legal standard for a motion to dismiss?"
+# or with awscurl:
+awscurl --service lambda --region us-east-1 -X POST -H 'content-type: application/json' \
+  -d '{"question":"..."}' "$API_URL/v1/query"
+```
+
+Runtime, cost, the arm64 + Web-Adapter details, and `-c auth=none` for a public
+demo endpoint: [`infra/README.md`](infra/README.md).
 
 ---
 
@@ -211,12 +288,21 @@ CourtListener / Caselaw Access Project (US case law), govinfo / US Code
 (statutes), and CUAD (labelled contract clauses) — via
 `scripts/fetch_corpus.py` (stubbed with the schema and sources documented).
 
-## Scope of this slice
+## Scope & status
 
-This implements build-order steps 1–4 from the design doc: a grounded,
-citation-verified single workflow with the full engineering scaffold (config,
-logging, guardrails, tests, eval, Docker, CDK). Deliberately **not** yet built:
-the Strands/AgentCore runtime swap, Lambda/SQS/SNS tool integrations, OpenTelemetry
-export + dashboard, and the LLM-as-judge answer eval. The orchestration is a thin
-custom supervisor with typed agent boundaries so those are additive, not rewrites.
-# agentic-legal-intelligence-platform
+**Live today** — build-order steps 1–4 (a grounded, citation-verified workflow)
+with the full engineering scaffold (config, logging, guardrails, tests, eval,
+Docker, CDK), **deployed on AWS**:
+
+- **Tier 1 — real model:** planner + drafter run on **Amazon Bedrock** (Claude
+  Haiku 4.5, pay-per-call), verified end-to-end.
+- **Tier 2 — serverless API:** the FastAPI app runs as a **container Lambda behind
+  a Function URL** (AWS Lambda Web Adapter, arm64/Graviton), corpus in S3, config
+  in SSM, least-privilege IAM — all via CDK, fully destroyable. Live `/v1/query`
+  returns citation-verified answers.
+
+Deliberately **not** yet built (additive, not rewrites — the orchestration is a
+thin custom supervisor with typed agent boundaries): a Strands/AgentCore runtime
+swap, SQS/SNS tool integrations, OpenTelemetry export + dashboard, an LLM-as-judge
+answer eval, a CI regression gate on the eval metrics, and a real
+(CourtListener / CAP / CUAD) corpus in place of the fixture set.
