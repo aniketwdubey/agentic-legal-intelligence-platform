@@ -1,0 +1,9 @@
+{
+  "id": "clause-nda-confidentiality",
+  "citation": "Playbook Clause NDA-1 (Confidentiality Obligation)",
+  "type": "contract_clause",
+  "jurisdiction": "US",
+  "title": "Mutual NDA — Confidentiality Obligation (standard position)",
+  "text": "Each party (the Receiving Party) shall hold in strict confidence all Confidential Information disclosed to it by the other party (the Disclosing Party) and shall not disclose such Confidential Information to any third party without the prior written consent of the Disclosing Party. The Receiving Party shall use the Confidential Information solely for the purpose of evaluating or pursuing the business relationship between the parties and for no other purpose. Confidential Information does not include information that is or becomes publicly available through no breach by the Receiving Party, or that was already known to the Receiving Party free of any confidentiality obligation prior to disclosure.",
+  "source_url": null
+}

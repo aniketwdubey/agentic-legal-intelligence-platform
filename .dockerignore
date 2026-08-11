@@ -1,0 +1,19 @@
+# Keep the Docker build context small and reproducible. The image needs only
+# pyproject/README, src, data, and eval (see Dockerfile COPYs).
+.venv
+.git
+.gitignore
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+infra/cdk.out
+infra/.venv
+tests
+scripts
+.env
+.env.*
+!.env.example
+docker-compose.yml

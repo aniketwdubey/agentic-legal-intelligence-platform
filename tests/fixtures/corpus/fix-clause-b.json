@@ -1,0 +1,9 @@
+{
+  "id": "fix-clause-b",
+  "citation": "Test Playbook Clause B (Confidentiality)",
+  "type": "contract_clause",
+  "jurisdiction": "US",
+  "title": "Confidentiality obligation",
+  "text": "The receiving party shall hold in strict confidence all confidential information disclosed by the disclosing party and shall not disclose it to any third party without prior written consent. Confidential information does not include information that is or becomes publicly available.",
+  "source_url": null
+}
