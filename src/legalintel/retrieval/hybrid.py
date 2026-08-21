@@ -9,14 +9,14 @@ semantic recall. Indexing embeds the corpus once at construction.
 from __future__ import annotations
 
 import numpy as np
+import structlog
 
 from legalintel.config import Settings
-from legalintel.logging import get_logger
 from legalintel.retrieval.bm25 import BM25
 from legalintel.retrieval.embeddings import Embedder, build_embedder
 from legalintel.schemas import Authority, RetrievedAuthority
 
-log = get_logger("retrieval")
+log = structlog.get_logger("retrieval")
 
 
 def _minmax(arr: np.ndarray) -> np.ndarray:

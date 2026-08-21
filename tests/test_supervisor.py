@@ -1,31 +1,26 @@
-"""End-to-end supervisor behaviour with the offline mock provider and fakes."""
+"""End-to-end supervisor behaviour with the offline StubModel and fakes."""
 
 from __future__ import annotations
 
-import json
-
-from legalintel.agents.drafting import DraftingAgent
+from legalintel.agents._stub_model import StubModel
+from legalintel.agents.drafting import Claim, DraftAnswer, DraftingAgent
 from legalintel.agents.planner import PlannerAgent
-from legalintel.agents.retrieval import RetrievalAgent
+from legalintel.agents.retrieval import make_retrieve_tool
 from legalintel.agents.supervisor import Supervisor, build_supervisor
-from legalintel.agents.validation import ValidationAgent
-from legalintel.llm import LLMError
-from legalintel.llm.mock import MockLLMClient
-from legalintel.llm.prompts import ROLE_DRAFTER, ROLE_PLANNER
 from legalintel.schemas import QueryRequest, Status
 
 
-def _supervisor(client, retriever, settings) -> Supervisor:
+def _supervisor(model, retriever, settings) -> Supervisor:
     return Supervisor(
-        planner=PlannerAgent(client, settings),
-        retrieval=RetrievalAgent(retriever),
-        drafting=DraftingAgent(client, settings),
-        validation=ValidationAgent(settings),
+        planner=PlannerAgent(model),
+        retrieve=make_retrieve_tool(retriever),
+        drafting=DraftingAgent(model),
+        grounding_threshold=settings.grounding_threshold,
     )
 
 
 def test_grounded_query_is_answered_with_verified_citations(retriever, settings):
-    sup = _supervisor(MockLLMClient(), retriever, settings)
+    sup = _supervisor(StubModel(), retriever, settings)
     resp = sup.run(
         QueryRequest(question="What is the standard for fair use of a copyrighted work?")
     )
@@ -38,7 +33,7 @@ def test_grounded_query_is_answered_with_verified_citations(retriever, settings)
 
 
 def test_out_of_corpus_question_abstains(retriever, settings):
-    sup = _supervisor(MockLLMClient(), retriever, settings)
+    sup = _supervisor(StubModel(), retriever, settings)
     resp = sup.run(
         QueryRequest(question="What is the maximum blood alcohol limit for pilots in Japan?")
     )
@@ -47,43 +42,39 @@ def test_out_of_corpus_question_abstains(retriever, settings):
     assert resp.abstention_reason
 
 
-class _HallucinatingClient(MockLLMClient):
+class _HallucinatingModel(StubModel):
     """Drafter that invents a citation to an authority not in the retrieved set."""
 
-    def complete_json(self, *, system, prompt, timeout):
-        if ROLE_DRAFTER in system:
-            return json.dumps(
-                {
-                    "answer": "Fabricated.",
-                    "claims": [
-                        {
-                            "text": "A made-up proposition about fair use.",
-                            "authority_id": "totally-invented-case-2099",
-                            "quote": "nonexistent quote",
-                        }
-                    ],
-                }
-            )
-        return super().complete_json(system=system, prompt=prompt, timeout=timeout)
+    def _draft(self, text: str) -> DraftAnswer:
+        return DraftAnswer(
+            answer="Fabricated.",
+            claims=[
+                Claim(
+                    text="A made-up proposition about fair use.",
+                    authority_id="totally-invented-case-2099",
+                    quote="nonexistent quote",
+                )
+            ],
+        )
 
 
 def test_hallucinated_citation_never_reaches_user(retriever, settings):
-    sup = _supervisor(_HallucinatingClient(), retriever, settings)
+    sup = _supervisor(_HallucinatingModel(), retriever, settings)
     resp = sup.run(QueryRequest(question="Explain fair use of a copyrighted work."))
     # The invented citation is stripped; with no verified claim left, we abstain.
     assert resp.status is Status.ABSTAINED
     assert all(c.authority_id != "totally-invented-case-2099" for c in resp.citations)
 
 
-class _FailingClient(MockLLMClient):
-    def complete_json(self, *, system, prompt, timeout):
-        if ROLE_PLANNER in system:
-            raise LLMError("bedrock down")
-        return super().complete_json(system=system, prompt=prompt, timeout=timeout)
+class _FailingModel(StubModel):
+    """Model that fails during planning (simulates a Bedrock outage)."""
+
+    def _plan(self, text: str):
+        raise RuntimeError("bedrock down")
 
 
-def test_non_retryable_llm_error_escalates(retriever, settings):
-    sup = _supervisor(_FailingClient(), retriever, settings)
+def test_model_failure_escalates(retriever, settings):
+    sup = _supervisor(_FailingModel(), retriever, settings)
     resp = sup.run(QueryRequest(question="Anything about fair use."))
     assert resp.status is Status.ESCALATED
     assert resp.abstention_reason

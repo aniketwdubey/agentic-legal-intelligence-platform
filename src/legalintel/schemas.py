@@ -1,9 +1,9 @@
-"""Pydantic schemas — the typed contracts at every agent boundary.
+"""Shared, cross-cutting schemas.
 
-Each agent declares an input and output schema. The supervisor validates
-outputs against these schemas on every hop, so a malformed model response is
-caught at the boundary that produced it (debuggability) rather than surfacing
-as a corrupt final answer.
+These are the contracts that span more than one agent: the corpus/retrieval
+primitives and the public API request/response. Schemas owned by a single agent
+live next to that agent (``agents/<name>/schema.py``) — e.g. ``Plan`` in the
+planner, ``DraftAnswer`` in the drafter, ``ValidationReport`` in the validator.
 """
 
 from __future__ import annotations
@@ -45,79 +45,12 @@ class RetrievedAuthority(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Task intent (planner output)
+# Task intent (shared: produced by the planner, surfaced in the response)
 # ---------------------------------------------------------------------------
 class TaskType(str, Enum):
     RESEARCH = "research"
     DRAFTING = "drafting"
     DOC_REVIEW = "doc_review"
-
-
-class PlanStep(str, Enum):
-    RETRIEVE = "retrieve"
-    DRAFT = "draft"
-    VALIDATE = "validate"
-
-
-class Plan(BaseModel):
-    """Planner output: the interpreted intent and the ordered steps to run."""
-
-    task_type: TaskType
-    jurisdiction: str = "US"
-    search_queries: list[str] = Field(
-        min_length=1, description="Queries the retrieval agent should issue."
-    )
-    steps: list[PlanStep] = Field(min_length=1)
-    rationale: str = Field(description="Why the planner chose these steps.")
-
-
-# ---------------------------------------------------------------------------
-# Drafting agent output
-# ---------------------------------------------------------------------------
-class Claim(BaseModel):
-    """A single legal proposition the drafting agent asserts, with its citation.
-
-    ``authority_id`` MUST reference an id present in the retrieved set; the
-    validation agent enforces this and computes support.
-    """
-
-    text: str = Field(description="The legal proposition being asserted.")
-    authority_id: str = Field(description="Corpus id of the supporting authority.")
-    quote: str = Field(default="", description="Verbatim span from the authority text.")
-
-
-class DraftAnswer(BaseModel):
-    """Ungrounded-until-validated output of the drafting agent."""
-
-    answer: str = Field(description="Prose answer / draft assembled from claims.")
-    claims: list[Claim] = Field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# Validation agent output
-# ---------------------------------------------------------------------------
-class ClaimVerdict(BaseModel):
-    claim: Claim
-    citation_exists: bool = Field(description="authority_id is in the retrieved set.")
-    supported: bool = Field(description="Quote/claim is grounded above threshold.")
-    support_score: float = Field(ge=0.0, le=1.0)
-    reason: str = ""
-
-
-class ValidationReport(BaseModel):
-    verdicts: list[ClaimVerdict] = Field(default_factory=list)
-
-    @property
-    def hallucinated_citations(self) -> list[Claim]:
-        return [v.claim for v in self.verdicts if not v.citation_exists]
-
-    @property
-    def unsupported_claims(self) -> list[Claim]:
-        return [v.claim for v in self.verdicts if v.citation_exists and not v.supported]
-
-    @property
-    def all_verified(self) -> bool:
-        return bool(self.verdicts) and all(v.citation_exists and v.supported for v in self.verdicts)
 
 
 # ---------------------------------------------------------------------------

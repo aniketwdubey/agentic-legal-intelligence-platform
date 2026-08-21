@@ -1,38 +1,42 @@
 """Supervisor control layer — orchestration, grounding policy, recovery.
 
-Runs the plan's steps against shared workflow state, validates every agent
-output at the boundary, and makes the final answer/abstain/escalate decision.
-The core discipline: **a claim reaches the user only if the validation agent
-verified both that its citation exists in the retrieved set and that the cited
-authority supports it.** Anything less becomes an abstention or a human-review
-escalation — the platform never invents law to fill a gap.
+Drives the deterministic pipeline (plan -> retrieve -> draft -> validate) and
+makes the final answer/abstain/escalate decision. The core discipline: **a claim
+reaches the user only if the validator verified both that its citation exists in
+the retrieved set and that the cited authority supports it.** Anything less becomes
+an abstention or a human-review escalation — the platform never invents law.
+
+The individual agents run on Strands; this supervisor stays an explicit Python
+workflow (not a Strands graph) precisely because the grounding gate must be
+deterministic and run over the *exact* retrieved set the drafter was given.
 """
 
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
-from legalintel.agents.drafting import DraftingAgent, DraftInput
+import structlog
+
+from legalintel.agents.drafting import DraftingAgent
 from legalintel.agents.planner import PlannerAgent
-from legalintel.agents.retrieval import RetrievalAgent
-from legalintel.agents.validation import ValidationAgent, ValidationInput
+from legalintel.agents.retrieval import make_retrieve_tool
+from legalintel.agents.validation import ClaimVerdict, ValidationReport, validate
 from legalintel.config import Settings
-from legalintel.llm import LLMError, build_llm_client
-from legalintel.logging import bind_run, clear_run, get_logger
+from legalintel.logging import bind_run, clear_run
+from legalintel.models import build_model
 from legalintel.retrieval import HybridRetriever, load_corpus
 from legalintel.schemas import (
     CitationOut,
-    ClaimVerdict,
     QueryRequest,
     QueryResponse,
     RetrievedAuthority,
     Status,
     TaskType,
-    ValidationReport,
 )
 
-log = get_logger("supervisor")
+log = structlog.get_logger("supervisor")
 
 # Below this mean support score we escalate rather than answer outright.
 _LOW_CONFIDENCE = 0.35
@@ -62,28 +66,29 @@ class Supervisor:
     def __init__(
         self,
         planner: PlannerAgent,
-        retrieval: RetrievalAgent,
+        retrieve: Any,  # a Strands @tool bound to the retriever
         drafting: DraftingAgent,
-        validation: ValidationAgent,
+        grounding_threshold: float,
     ) -> None:
         self.planner = planner
-        self.retrieval = retrieval
+        self.retrieve = retrieve
         self.drafting = drafting
-        self.validation = validation
+        self._threshold = grounding_threshold
 
     def run(self, request: QueryRequest) -> QueryResponse:
         state = WorkflowState(trace_id=uuid.uuid4().hex[:12])
         bind_run(trace_id=state.trace_id)
         try:
             return self._run(request, state)
-        except LLMError as exc:
-            # Non-retryable model failure after guardrail retries: escalate, never guess.
-            log.error("supervisor.llm_failure", error=str(exc))
-            state.record("supervisor", ok=False, detail=f"llm_error: {exc}")
+        except Exception as exc:
+            # Safety net: any agent/model failure degrades to human review — the
+            # platform never returns an unverified answer or a 500 with legal text.
+            log.error("supervisor.pipeline_failure", error=str(exc), exc_info=True)
+            state.record("supervisor", ok=False, detail=f"error: {exc}")
             return QueryResponse(
                 status=Status.ESCALATED,
                 trace_id=state.trace_id,
-                abstention_reason="model unavailable after retries; routed to human review",
+                abstention_reason="pipeline failure; routed to human review",
                 steps_run=[s.agent for s in state.steps],
             )
         finally:
@@ -94,16 +99,16 @@ class Supervisor:
         plan = self.planner.run(request)
         state.record("planner", ok=True, detail=plan.task_type.value)
 
-        retrieved = self.retrieval.run(plan)
+        retrieved: list[RetrievedAuthority] = self.retrieve(plan.search_queries)
         state.record("retrieval", ok=bool(retrieved), detail=f"{len(retrieved)} authorities")
 
         if not retrieved:
             return self._abstain(state, plan.task_type, "no authority retrieved for the request")
 
-        draft = self.drafting.run(DraftInput(question=request.question, retrieved=retrieved))
+        draft = self.drafting.run(request.question, retrieved)
         state.record("drafting", ok=bool(draft.claims), detail=f"{len(draft.claims)} claims")
 
-        report = self.validation.run(ValidationInput(draft=draft, retrieved=retrieved))
+        report = validate(draft, retrieved, threshold=self._threshold)
         verified = [v for v in report.verdicts if v.citation_exists and v.supported]
         state.record(
             "validation",
@@ -190,12 +195,12 @@ class Supervisor:
 
 def build_supervisor(settings: Settings) -> Supervisor:
     """Assemble the full pipeline from settings. Used by the API, CLI, and eval."""
-    client = build_llm_client(settings)
+    model = build_model(settings)
     corpus = load_corpus(settings)
     retriever = HybridRetriever(corpus, settings)
     return Supervisor(
-        planner=PlannerAgent(client, settings),
-        retrieval=RetrievalAgent(retriever),
-        drafting=DraftingAgent(client, settings),
-        validation=ValidationAgent(settings),
+        planner=PlannerAgent(model),
+        retrieve=make_retrieve_tool(retriever),
+        drafting=DraftingAgent(model),
+        grounding_threshold=settings.grounding_threshold,
     )

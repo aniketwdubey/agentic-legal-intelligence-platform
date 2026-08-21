@@ -10,13 +10,14 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import structlog
 from fastapi import FastAPI
 
 from legalintel.agents import build_supervisor
 from legalintel.config import get_settings
-from legalintel.logging import configure_logging, get_logger
+from legalintel.logging import configure_logging
 
-log = get_logger("api")
+log = structlog.get_logger("api")
 
 
 @asynccontextmanager

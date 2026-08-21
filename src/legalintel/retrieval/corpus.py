@@ -10,11 +10,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import structlog
+
 from legalintel.config import Settings
-from legalintel.logging import get_logger
 from legalintel.schemas import Authority
 
-log = get_logger("corpus")
+log = structlog.get_logger("corpus")
 
 
 def load_corpus(settings: Settings) -> list[Authority]:

@@ -1,11 +1,12 @@
-"""Citation-verification agent — the platform's core guardrail."""
+"""Citation-verification — the platform's core guardrail (rule-based)."""
 
 from __future__ import annotations
 
 import pytest
 
-from legalintel.agents.validation import ValidationAgent, ValidationInput
-from legalintel.schemas import Authority, AuthorityType, Claim, DraftAnswer, RetrievedAuthority
+from legalintel.agents.drafting import Claim, DraftAnswer
+from legalintel.agents.validation import validate
+from legalintel.schemas import Authority, AuthorityType, RetrievedAuthority
 
 
 @pytest.fixture
@@ -26,9 +27,10 @@ def retrieved(authority: Authority) -> list[RetrievedAuthority]:
 
 
 def _validate(claims, retrieved, settings):
-    agent = ValidationAgent(settings)
-    return agent.run(
-        ValidationInput(draft=DraftAnswer(answer="x", claims=claims), retrieved=retrieved)
+    return validate(
+        DraftAnswer(answer="x", claims=claims),
+        retrieved,
+        threshold=settings.grounding_threshold,
     )
 
 

@@ -4,15 +4,16 @@ Uses ``structlog`` so every log line carries the run's context (trace_id,
 agent, step) as key/value pairs. In production (``LOG_FORMAT=json``) lines are
 machine-parseable JSON; in dev they are colourised key=value pairs.
 
-Bind per-request/per-run context with ``bind_run(trace_id=...)`` and every
-subsequent log from that agent chain inherits it.
+Call ``configure_logging(settings)`` once at startup, then obtain loggers with
+``structlog.get_logger(__name__)`` directly at each call site — there is no
+wrapper to go through. Bind per-request/per-run context with
+``bind_run(trace_id=...)`` and every subsequent log from that chain inherits it.
 """
 
 from __future__ import annotations
 
 import logging
 import sys
-from typing import cast
 
 import structlog
 from structlog.typing import Processor
@@ -56,11 +57,6 @@ def configure_logging(settings: Settings) -> None:
         cache_logger_on_first_use=True,
     )
     _CONFIGURED = True
-
-
-def get_logger(name: str) -> structlog.stdlib.BoundLogger:
-    """Return a bound logger for ``name``."""
-    return cast(structlog.stdlib.BoundLogger, structlog.get_logger(name))
 
 
 def bind_run(**kwargs: object) -> None:

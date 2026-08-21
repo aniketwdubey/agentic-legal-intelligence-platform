@@ -3,9 +3,8 @@
 What it creates (all either free, a few cents/month, or pure pay-per-call):
   * an S3 bucket holding the legal corpus (auto-emptied on destroy);
   * the corpus JSON uploaded into it at deploy time;
-  * SSM parameters the app reads for config (bucket name, model id);
   * a least-privilege IAM role the compute layer assumes (Bedrock invoke +
-    read-only S3/SSM + Lambda logs);
+    read-only S3 + Lambda logs);
   * a container-image Lambda running the FastAPI app behind a **Function URL** —
     the cheapest always-off compute (no API Gateway, no idle cost).
 
@@ -22,10 +21,9 @@ from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3_deployment as s3deploy
-from aws_cdk import aws_ssm as ssm
 from constructs import Construct
 
-# Bedrock model id provisioned into SSM + used by the API. Defaults to the Haiku
+# Bedrock model id used by the API. Defaults to the Haiku
 # 4.5 cross-region inference profile (current Claude models are not on-demand
 # invokable by bare id). Override at deploy with `-c model_id=...`.
 DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -64,18 +62,6 @@ class LegalIntelStack(Stack):
             retain_on_delete=False,
         )
 
-        # --- config in SSM (free) --------------------------------------------
-        ssm.StringParameter(
-            self, "CorpusBucketParam",
-            parameter_name="/legalintel/corpus_bucket",
-            string_value=corpus_bucket.bucket_name,
-        )
-        ssm.StringParameter(
-            self, "ModelIdParam",
-            parameter_name="/legalintel/model_id",
-            string_value=model_id,
-        )
-
         # --- least-privilege app role ----------------------------------------
         app_role = iam.Role(
             self,
@@ -95,7 +81,10 @@ class LegalIntelStack(Stack):
         corpus_bucket.grant_read(app_role)
         app_role.add_to_policy(
             iam.PolicyStatement(
-                actions=["bedrock:InvokeModel"],
+                # Strands' BedrockModel uses the Converse/ConverseStream API, which is
+                # authorized by InvokeModel *and* InvokeModelWithResponseStream (the
+                # streaming action) — both are required.
+                actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
                 # We invoke via a cross-region *inference profile* (us.anthropic.*),
                 # which fans out to the underlying foundation model in whichever
                 # region it routes to. That requires InvokeModel on BOTH the
@@ -106,12 +95,6 @@ class LegalIntelStack(Stack):
                     "arn:aws:bedrock:*::foundation-model/amazon.titan-embed-*",
                     f"arn:aws:bedrock:*:{self.account}:inference-profile/*",
                 ],
-            )
-        )
-        app_role.add_to_policy(
-            iam.PolicyStatement(
-                actions=["ssm:GetParameter", "ssm:GetParameters"],
-                resources=[f"arn:aws:ssm:{self.region}:{self.account}:parameter/legalintel/*"],
             )
         )
 

@@ -10,8 +10,7 @@ spin up and tear down repeatedly on minimal credits.
 |---|---|---|
 | S3 bucket | Holds the legal corpus (`corpus/*.json`) | ~cents/mo for a few KB |
 | S3 BucketDeployment | Uploads `../data/corpus` at deploy time | free (runs once) |
-| SSM parameters | `/legalintel/corpus_bucket`, `/legalintel/model_id` | free |
-| IAM role | Least-privilege: `bedrock:InvokeModel` + read-only S3/SSM + Lambda logs | free |
+| IAM role | Least-privilege: `bedrock:InvokeModel` + read-only S3 + Lambda logs | free |
 | Lambda (container image) | Runs the FastAPI app; reads corpus from S3, calls Bedrock | per-request only |
 | Lambda **Function URL** | Public HTTPS endpoint for the API (no API Gateway) | free |
 
@@ -70,8 +69,9 @@ Bedrock on every call, so an unauthenticated URL is a cost-abuse vector.
 ## Run the app locally against the deployed data plane
 
 ```bash
-export LEGALINTEL_CORPUS_S3_BUCKET=$(aws ssm get-parameter \
-  --name /legalintel/corpus_bucket --query Parameter.Value --output text)
+export LEGALINTEL_CORPUS_S3_BUCKET=$(aws cloudformation describe-stacks \
+  --stack-name LegalIntelStack \
+  --query "Stacks[0].Outputs[?OutputKey=='CorpusBucketName'].OutputValue" --output text)
 export LEGALINTEL_LLM_PROVIDER=bedrock
 make -C .. run
 ```
