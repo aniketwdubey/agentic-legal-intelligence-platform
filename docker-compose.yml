@@ -10,8 +10,8 @@ services:
       LEGALINTEL_LLM_PROVIDER: ${LEGALINTEL_LLM_PROVIDER:-mock}
       LEGALINTEL_EMBEDDER: ${LEGALINTEL_EMBEDDER:-hashing}
       LEGALINTEL_LOG_FORMAT: json
-      LEGALINTEL_AWS_REGION: ${LEGALINTEL_AWS_REGION:-ap-south-1}
-      LEGALINTEL_BEDROCK_MODEL_ID: ${LEGALINTEL_BEDROCK_MODEL_ID:-anthropic.claude-opus-4-8}
+      LEGALINTEL_AWS_REGION: ${LEGALINTEL_AWS_REGION:-us-east-1}
+      LEGALINTEL_BEDROCK_MODEL_ID: ${LEGALINTEL_BEDROCK_MODEL_ID:-us.anthropic.claude-haiku-4-5-20251001-v1:0}
       # Provided only when running against Bedrock; ignored by the mock provider.
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}

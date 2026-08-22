@@ -26,7 +26,13 @@ def main(argv: list[str]) -> int:
     supervisor = build_supervisor(settings)
     resp = supervisor.run(QueryRequest(question=" ".join(argv)))
 
-    print(f"\nstatus     : {resp.status.value}")
+    provider_line = settings.llm_provider + (
+        f" ({settings.bedrock_model_id} @ {settings.aws_region})"
+        if settings.llm_provider == "bedrock"
+        else " (offline)"
+    )
+    print(f"\nprovider   : {provider_line}")
+    print(f"status     : {resp.status.value}")
     print(f"trace_id   : {resp.trace_id}")
     print(f"task_type  : {resp.task_type.value if resp.task_type else '-'}")
     print(f"confidence : {resp.confidence}")
