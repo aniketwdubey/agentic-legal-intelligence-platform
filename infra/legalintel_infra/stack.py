@@ -1,31 +1,29 @@
-"""The one and only stack — a lean, cheap, fully destroyable data plane + API.
+"""The AgentCore stack — the legal-intel agent on Amazon Bedrock AgentCore Runtime.
 
-What it creates (all either free, a few cents/month, or pure pay-per-call):
-  * an S3 bucket holding the legal corpus (auto-emptied on destroy);
-  * the corpus JSON uploaded into it at deploy time;
-  * a least-privilege IAM role the compute layer assumes (Bedrock invoke +
-    read-only S3 + Lambda logs);
-  * a container-image Lambda running the FastAPI app behind a **Function URL** —
-    the cheapest always-off compute (no API Gateway, no idle cost).
+Everything is declarative CDK so it is reproducible, reviewable, and cleanly
+`cdk destroy`-able:
 
-What it deliberately does NOT create: OpenSearch, RDS, NAT gateways, or any
-always-on compute — those are the expensive parts. Bedrock is pay-per-call and
-Lambda bills only per request, so there is no standing cost.
+  * an **AgentCore Memory** resource (short-term, per-session conversation);
+  * an ARM64 **container image** (Dockerfile.agentcore) built + pushed by CDK;
+  * a least-privilege **execution role** the runtime assumes (Bedrock invoke +
+    Memory + image pull + logs + workload identity);
+  * an **AgentCore Runtime** (HTTP protocol) running that image;
+  * a **Runtime Endpoint** that makes it invocable.
+
+The container is self-contained (corpus baked in), so unlike the Lambda variant
+there is no S3 data plane. Bedrock and AgentCore are pay-per-call, so there is no
+standing compute cost.
 """
 
 from __future__ import annotations
 
-from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack
+from aws_cdk import CfnOutput, RemovalPolicy, Stack
+from aws_cdk import aws_bedrockagentcore as agentcore
 from aws_cdk import aws_ecr_assets as ecr_assets
 from aws_cdk import aws_iam as iam
-from aws_cdk import aws_lambda as lambda_
-from aws_cdk import aws_s3 as s3
-from aws_cdk import aws_s3_deployment as s3deploy
 from constructs import Construct
 
-# Bedrock model id used by the API. Defaults to the Haiku
-# 4.5 cross-region inference profile (current Claude models are not on-demand
-# invokable by bare id). Override at deploy with `-c model_id=...`.
+# Bedrock model id the agent invokes (Haiku 4.5 cross-region inference profile).
 DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 
@@ -34,112 +32,150 @@ class LegalIntelStack(Stack):
         super().__init__(scope, cid, **kwargs)
 
         model_id = self.node.try_get_context("model_id") or DEFAULT_MODEL_ID
-        # Function URL auth: default to AWS_IAM so a leaked URL can't run up a
-        # Bedrock bill. Deploy with `-c auth=none` for a browser-friendly public
-        # demo endpoint (understand the abuse risk before you do).
-        auth = (self.node.try_get_context("auth") or "iam").lower()
 
-        # --- corpus bucket (auto-emptied + destroyed on `cdk destroy`) --------
-        corpus_bucket = s3.Bucket(
+        # --- short-term conversation memory ----------------------------------
+        memory = agentcore.CfnMemory(
             self,
-            "CorpusBucket",
-            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
-            encryption=s3.BucketEncryption.S3_MANAGED,
-            enforce_ssl=True,
-            versioned=False,
-            removal_policy=RemovalPolicy.DESTROY,
-            auto_delete_objects=True,
+            "ConvMemory",
+            name="legalintel_conversations",
+            event_expiry_duration=30,  # days a session's raw turns are retained
+            description="Short-term multi-turn conversation memory for the legal-intel agent",
+        )
+        memory.apply_removal_policy(RemovalPolicy.DESTROY)
+
+        # --- container image (ARM64, built + pushed by CDK) ------------------
+        image = ecr_assets.DockerImageAsset(
+            self,
+            "AgentImage",
+            directory="..",
+            file="Dockerfile.agentcore",
+            platform=ecr_assets.Platform.LINUX_ARM64,  # AgentCore runs on Graviton
         )
 
-        # Upload the local corpus into the bucket under corpus/ at deploy time.
-        s3deploy.BucketDeployment(
+        # --- least-privilege execution role ----------------------------------
+        role = iam.Role(
             self,
-            "CorpusDeployment",
-            sources=[s3deploy.Source.asset("../data/corpus")],
-            destination_bucket=corpus_bucket,
-            destination_key_prefix="corpus",
-            prune=True,
-            retain_on_delete=False,
-        )
-
-        # --- least-privilege app role ----------------------------------------
-        app_role = iam.Role(
-            self,
-            "AppRole",
-            assumed_by=iam.CompositePrincipal(
-                iam.ServicePrincipal("lambda.amazonaws.com"),
-                iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+            "AgentRole",
+            assumed_by=iam.ServicePrincipal(
+                "bedrock-agentcore.amazonaws.com",
+                conditions={
+                    "StringEquals": {"aws:SourceAccount": self.account},
+                    "ArnLike": {
+                        "aws:SourceArn": f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:*"
+                    },
+                },
             ),
-            description="Role the legal-intel compute layer assumes.",
-            # CloudWatch Logs for the Lambda; nothing broader.
-            managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name(
-                    "service-role/AWSLambdaBasicExecutionRole"
-                )
-            ],
+            description="Execution role for the legal-intel AgentCore runtime.",
         )
-        corpus_bucket.grant_read(app_role)
-        app_role.add_to_policy(
+        image.repository.grant_pull(role)  # pull the container image from ECR
+
+        role.add_to_policy(
             iam.PolicyStatement(
-                # Strands' BedrockModel uses the Converse/ConverseStream API, which is
-                # authorized by InvokeModel *and* InvokeModelWithResponseStream (the
-                # streaming action) — both are required.
+                sid="Bedrock",
+                # Strands' BedrockModel uses ConverseStream -> needs both actions.
                 actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
-                # We invoke via a cross-region *inference profile* (us.anthropic.*),
-                # which fans out to the underlying foundation model in whichever
-                # region it routes to. That requires InvokeModel on BOTH the
-                # profile ARN and the foundation-model ARNs across regions, so the
-                # foundation-model resources are intentionally region-agnostic.
                 resources=[
                     "arn:aws:bedrock:*::foundation-model/anthropic.*",
-                    "arn:aws:bedrock:*::foundation-model/amazon.titan-embed-*",
                     f"arn:aws:bedrock:*:{self.account}:inference-profile/*",
                 ],
             )
         )
+        role.add_to_policy(
+            iam.PolicyStatement(
+                sid="Memory",
+                actions=[
+                    "bedrock-agentcore:CreateEvent",
+                    "bedrock-agentcore:ListEvents",
+                    "bedrock-agentcore:GetEvent",
+                    "bedrock-agentcore:ListSessions",
+                    "bedrock-agentcore:ListActors",
+                    "bedrock-agentcore:RetrieveMemoryRecords",
+                    "bedrock-agentcore:GetMemory",
+                    "bedrock-agentcore:GetMemoryRecord",
+                    "bedrock-agentcore:ListMemoryRecords",
+                ],
+                resources=[memory.attr_memory_arn, f"{memory.attr_memory_arn}/*"],
+            )
+        )
+        role.add_to_policy(
+            iam.PolicyStatement(
+                sid="WorkloadIdentity",
+                actions=[
+                    "bedrock-agentcore:GetWorkloadAccessToken",
+                    "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+                    "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
+                ],
+                resources=[
+                    f"arn:aws:bedrock-agentcore:{self.region}:{self.account}"
+                    ":workload-identity-directory/default",
+                    f"arn:aws:bedrock-agentcore:{self.region}:{self.account}"
+                    ":workload-identity-directory/default/workload-identity/*",
+                ],
+            )
+        )
+        role.add_to_policy(
+            iam.PolicyStatement(
+                sid="Logs",
+                actions=[
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "logs:DescribeLogStreams",
+                    "logs:DescribeLogGroups",
+                ],
+                resources=[
+                    f"arn:aws:logs:{self.region}:{self.account}"
+                    ":log-group:/aws/bedrock-agentcore/runtimes/*"
+                ],
+            )
+        )
+        role.add_to_policy(
+            iam.PolicyStatement(
+                sid="Telemetry",
+                actions=[
+                    "xray:PutTraceSegments",
+                    "xray:PutTelemetryRecords",
+                    "xray:GetSamplingRules",
+                    "xray:GetSamplingTargets",
+                    "cloudwatch:PutMetricData",
+                ],
+                resources=["*"],
+            )
+        )
 
-        # --- serverless API: container-image Lambda + Function URL ------------
-        # Reuses the very Docker image the tests/compose run, so local and cloud
-        # behaviour are identical. The AWS Lambda Web Adapter (baked into the
-        # image) fronts uvicorn; no handler shim, no Mangum.
-        api_fn = lambda_.DockerImageFunction(
+        # --- AgentCore Runtime + Endpoint ------------------------------------
+        runtime = agentcore.CfnRuntime(
             self,
-            "ApiFn",
-            code=lambda_.DockerImageCode.from_image_asset(
-                "..",
-                file="Dockerfile",
-                # Pin the build platform so the image (incl. the Lambda Web Adapter
-                # binary and compiled wheels) matches the function architecture
-                # regardless of the host that runs `cdk deploy` — an arm64 Mac
-                # would otherwise produce an arm64 image that fails on x86_64.
-                platform=ecr_assets.Platform.LINUX_ARM64,
+            "Runtime",
+            agent_runtime_name="legalintel_agent",
+            agent_runtime_artifact=agentcore.CfnRuntime.AgentRuntimeArtifactProperty(
+                container_configuration=agentcore.CfnRuntime.ContainerConfigurationProperty(
+                    container_uri=image.image_uri
+                )
             ),
-            architecture=lambda_.Architecture.ARM_64,  # Graviton: cheaper, native to the Mac build
-            role=app_role,
-            memory_size=1024,  # headroom for numpy + corpus index build on cold start
-            timeout=Duration.seconds(90),  # planner + drafter LLM hops, with retries
-            environment={
+            network_configuration=agentcore.CfnRuntime.NetworkConfigurationProperty(
+                network_mode="PUBLIC"  # IAM-authed InvokeAgentRuntime; no VPC for this demo
+            ),
+            protocol_configuration="HTTP",
+            role_arn=role.role_arn,
+            environment_variables={
                 "LEGALINTEL_LLM_PROVIDER": "bedrock",
                 "LEGALINTEL_AWS_REGION": self.region,
                 "LEGALINTEL_BEDROCK_MODEL_ID": model_id,
-                # Read the corpus from S3 (the deployed data plane). Blanking the
-                # local dir makes load_corpus fall through to the bucket.
-                "LEGALINTEL_CORPUS_DIR": "",
-                "LEGALINTEL_CORPUS_S3_BUCKET": corpus_bucket.bucket_name,
+                "LEGALINTEL_MEMORY_ID": memory.attr_memory_id,
             },
         )
+        runtime.node.add_dependency(role)
 
-        fn_url = api_fn.add_function_url(
-            auth_type=(
-                lambda_.FunctionUrlAuthType.NONE
-                if auth == "none"
-                else lambda_.FunctionUrlAuthType.AWS_IAM
-            ),
+        endpoint = agentcore.CfnRuntimeEndpoint(
+            self,
+            "Endpoint",
+            agent_runtime_id=runtime.attr_agent_runtime_id,
+            name="live",
         )
 
         # --- outputs ----------------------------------------------------------
-        CfnOutput(self, "CorpusBucketName", value=corpus_bucket.bucket_name)
-        CfnOutput(self, "AppRoleArn", value=app_role.role_arn)
+        CfnOutput(self, "RuntimeArn", value=runtime.attr_agent_runtime_arn)
+        CfnOutput(self, "EndpointArn", value=endpoint.attr_agent_runtime_endpoint_arn)
+        CfnOutput(self, "MemoryId", value=memory.attr_memory_id)
         CfnOutput(self, "ModelId", value=model_id)
-        CfnOutput(self, "ApiUrl", value=fn_url.url)
-        CfnOutput(self, "ApiAuthType", value="NONE" if auth == "none" else "AWS_IAM")
