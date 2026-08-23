@@ -11,39 +11,42 @@ cannot ground a claim, it **abstains or escalates** instead of inventing law.
 > headline property is that **it cannot assert a legal proposition without a
 > verified citation to retrieved source text.**
 
-Built as an independent portfolio project on public legal data only.
+Built as an independent portfolio project on public legal data only, deployed on
+the AWS agent stack — **Strands Agents SDK + Amazon Bedrock + AgentCore Runtime &
+Memory** (multi-turn), all via CDK.
 
 ---
 
 ## Architecture
 
 ```
-                 QueryRequest (question, jurisdiction?)
-                              │
-                              ▼
-              ┌───────────  Supervisor  ───────────┐   validates every agent
-              │        (orchestration + policy)     │   output at the boundary,
-              │                                      │   records an execution trace
-   ┌──────────┴─────────┐                            │
-   ▼                    ▼                            ▼
-Planner ──► Plan    Retrieval ──► RetrievedAuthority[]   Drafting ──► DraftAnswer
-(task_type,         (hybrid BM25 + dense,                (claims grounded ONLY in
- jurisdiction,       min-max fused over                  retrieved authority)
- queries)            the legal corpus)                         │
-                                                              ▼
-                                             Validation (RULE-BASED, not an LLM)
-                                             ├─ citation_exists? (in retrieved set)
-                                             └─ supported?       (quote authentic +
-                                                                  claim grounded)
-                              │
-                              ▼
-            Grounding policy:  verified claims only
-              ├─ none verified            → ABSTAIN ("insufficient authority")
-              ├─ low confidence / risk    → ESCALATE (human review)
-              └─ verified + confident      → ANSWER (answer + verified citations)
-                              │
-                              ▼
-             QueryResponse (status, answer, citations, confidence, trace)
+  QueryRequest(question)        conversation history (optional — supplied by
+        │                        AgentCore Memory when deployed; see below)
+        │                                         │
+        ▼                                         ▼
+  ┌──────────────────────────  SUPERVISOR  ──────────────────────────┐
+  │   fixed pipeline · validates every hop · trace_id + confidence    │
+  └───────────────────────────────────────────────────────────────────┘
+        │
+  ①  Planner    (Strands Agent · LLM)  →  interprets intent: task_type +
+        │                                 search_queries  (uses history to
+        ▼                                 resolve follow-up references)
+  ②  Retrieval  (Strands @tool)        →  hybrid BM25 + dense, min-max fused
+        │                                 over the corpus → RetrievedAuthority[]
+        ▼
+  ③  Drafting   (Strands Agent · LLM)  →  DraftAnswer: every claim grounded
+        │                                 ONLY in the retrieved set (id + quote)
+        ▼
+  ④  Validation (RULE-BASED · no LLM)  →  per claim: authority_id in the
+        │                                 retrieved set? quote authentic?
+        ▼                                 proposition grounded above threshold?
+  Grounding policy   (only verified claims survive)
+     ├─ none verified            → ABSTAIN   ("insufficient authority")
+     ├─ low confidence / risk    → ESCALATE  (human review)
+     └─ verified + confident     → ANSWER    (answer + verified citations)
+        │
+        ▼
+  QueryResponse (status, answer, citations, confidence, trace)
 ```
 
 Each agent owns a typed input/output contract (its own `schema.py`), so a failure
@@ -54,7 +57,7 @@ opaque prompt chain.
 
 | Agent | Input → Output | LLM? | Responsibility |
 |---|---|---|---|
-| **Planner** (Strands `Agent`) | `QueryRequest` → `Plan` | ✅ | Interprets intent at runtime — classifies `task_type` (research / drafting / doc_review), the jurisdiction, and one or more `search_queries`. Asserts no legal proposition itself. (The `retrieve → draft → validate` sequence is a **fixed** pipeline the supervisor always runs, not chosen per request — see the note below.) |
+| **Planner** (Strands `Agent`) | `QueryRequest` (+ history) → `Plan` | ✅ | Interprets intent at runtime — classifies `task_type` (research / drafting / doc_review), the jurisdiction, and one or more `search_queries`. When conversation history is supplied (multi-turn), it resolves follow-up references (*"the first of those factors"*) against it. Asserts no legal proposition itself. (The `retrieve → draft → validate` sequence is a **fixed** pipeline the supervisor always runs, not chosen per request — see the note below.) |
 | **Retrieval** (Strands `@tool`) | `list[str]` → `RetrievedAuthority[]` | ❌ | Runs each query through hybrid search (BM25 + dense embeddings) over the corpus, min-max fuses the two legs, and returns the top-k authorities with scores. Decoupled — takes plain queries, not a `Plan`. Pure-Python, no search service. |
 | **Drafting** (Strands `Agent`) | question + `RetrievedAuthority[]` → `DraftAnswer` | ✅ | Composes the answer as a set of `claims`, each carrying an `authority_id` from the retrieved set and a **verbatim quote** copied from that authority's text. Insufficient context → empty claim list (→ abstention). |
 | **Validation** (`validate()`) | `DraftAnswer` + `RetrievedAuthority[]` → `ValidationReport` | ❌ **rule-based** | Independently verifies each claim: (1) `citation_exists` — the `authority_id` is in the retrieved set; (2) the quote is a real span of that authority; (3) the claim is grounded above `grounding_threshold`. Emits per-claim verdicts + support scores. |
@@ -93,32 +96,39 @@ The upshot: **a hallucinated citation cannot reach the user by construction** �
 is removed before the answer is assembled, and if nothing is left the system
 abstains rather than guesses.
 
-### Deployed runtime — how a live request flows
+### Deployed runtime — Amazon Bedrock AgentCore
 
-The pipeline above is host- and provider-agnostic. In the deployed (Tier 2) form
-it runs behind a Lambda Function URL:
+The pipeline above is host-agnostic. It's deployed on **Amazon Bedrock AgentCore
+Runtime** as an ARM64 container, with **AgentCore Memory** providing per-session
+conversation history — which is what makes the multi-turn follow-ups work:
 
 ```
-awscurl / scripts/call_api.py  (SigV4-signed)   # AWS_IAM auth — unsigned requests get 403
-      │
-      ▼
-Lambda Function URL ──► Container Lambda (arm64/Graviton)
-                               │
-                     AWS Lambda Web Adapter          # translates the Lambda event ⇄ HTTP
-                               │
-                        uvicorn → FastAPI  /v1/query
-                               │
-                        Supervisor pipeline
-                         ├─ Planner / Drafting ──► Amazon Bedrock (Claude Haiku 4.5, pay-per-call)
-                         └─ Retrieval          ──► legal corpus loaded from S3
-                               │
-                               ▼
-                     QueryResponse (JSON)
+  scripts/invoke_agentcore.py   (SigV4 InvokeAgentRuntime · runtimeSessionId)
+        │
+        ▼
+  Amazon Bedrock AgentCore Runtime  (ARM64 container · /ping + /invocations)
+        │                                   ┌──────── AgentCore Memory ────────┐
+        │   load last-K turns  ────────────►│  get_last_k_turns(session)        │
+        ▼                                   │  create_event(session, turn)      │
+  BedrockAgentCoreApp @entrypoint  ────────►└───────────────▲──────────────────┘
+        │   (store the new turn) ───────────────────────────┘
+        ▼
+  Supervisor pipeline  (planner → retrieval → drafting → validation → policy)
+     └─ Planner / Drafting ──► Amazon Bedrock (Claude Haiku 4.5, pay-per-call)
+        │
+        ▼
+  QueryResponse (JSON — status, answer, verified citations, confidence)
 ```
 
-The **same Docker image** runs the tests, `docker-compose`, and Lambda — the Web
-Adapter lets ordinary uvicorn serve Lambda invocations with **zero Lambda-specific
-code** (no Mangum, no handler shim). Details: [`infra/README.md`](infra/README.md).
+The **same supervisor code** runs offline (mock `StubModel`), locally (`make run`
+serves the FastAPI app for dev), and on AgentCore (`agentcore_app.py` wraps it in
+the Runtime contract). Memory is optional — without `LEGALINTEL_MEMORY_ID` the
+agent is a stateless single-shot. Provisioned entirely by CDK — see
+[`infra/README.md`](infra/README.md).
+
+> The earlier **Lambda Function URL** deployment (container Lambda + AWS Lambda Web
+> Adapter, no conversation memory) is preserved on the
+> [`lambda-function-url`](../../tree/lambda-function-url) branch.
 
 ### Key design decisions
 
@@ -141,10 +151,15 @@ code** (no Mangum, no handler shim). Details: [`infra/README.md`](infra/README.m
   live Bedrock, with no network.
 - **Hybrid retrieval with no search service.** BM25 (lexical) + dense embeddings
   (a deterministic hashing embedder by default, Titan on Bedrock), fused per
-  query. Pure-Python so it runs in CI and on Lambda without OpenSearch.
-- **Cost-conscious AWS.** Bedrock is pay-per-call; the CDK stack provisions only
-  free/near-free resources so it spins up and tears down cheaply. See
-  [`infra/`](infra/README.md).
+  query. Pure-Python so it runs in CI and in the container without OpenSearch.
+- **Deployed on AgentCore Runtime with earned Memory.** The agent runs on Amazon
+  Bedrock **AgentCore Runtime**; **AgentCore Memory** supplies per-session history
+  so follow-up questions resolve. Memory is a *real* capability the deployment
+  uses — not a hollow keyword — and the whole thing is native CDK
+  (`AWS::BedrockAgentCore::{Memory,Runtime,RuntimeEndpoint}`).
+- **Cost-conscious AWS.** Bedrock and AgentCore Runtime are pay-per-call and scale
+  to zero; the CDK stack adds only near-free storage (Memory + the ECR image), so
+  it spins up and tears down cheaply. See [`infra/`](infra/README.md).
 
 ### Layout
 
@@ -166,13 +181,15 @@ src/legalintel/
     retrieval/     retrieve @tool                       (rule-based)
     validation/    validate() + ValidationReport schema (rule-based)
   retrieval/       corpus loader, BM25, embeddings, hybrid fusion, text utils
-  api/             FastAPI app (thin handlers; no business logic in routes)
+  api/             FastAPI app for local dev (thin handlers; no business logic)
   eval/            golden-set format, metrics, runner
+agentcore_app.py   AgentCore Runtime entrypoint (BedrockAgentCoreApp + Memory)
+Dockerfile.agentcore   ARM64 image for AgentCore (/ping + /invocations on 8080)
 data/corpus/       tiny public-legal fixture corpus (statutes, a case, playbook clauses)
 eval/golden_set.jsonl   golden questions → reference answer → expected authorities
 tests/             pytest; model fully offline (StubModel); fixture corpus
-infra/             AWS CDK app (cheap, fully destroyable)
-scripts/           ask.py (CLI), call_api.py (SigV4), check_bedrock.py, fetch_corpus.py
+infra/             AWS CDK app (AgentCore Runtime + Memory; fully destroyable)
+scripts/           ask.py (CLI), invoke_agentcore.py (deployed runtime), check_bedrock.py
 ```
 
 ---
@@ -278,28 +295,29 @@ capability.
 
 ## Provision / tear down AWS (CDK)
 
-A lean, fully destroyable data plane **plus a serverless API** — all pay-per-call
-or free, no always-on cost:
+Native CDK provisions the whole AgentCore stack — Memory, a least-privilege
+execution role, the ARM64 image, and the Runtime + Endpoint. Pay-per-call and
+fully destroyable:
 
 ```bash
 cd infra && make install && make bootstrap   # one-time per account/region (needs Docker)
-make deploy     # S3 corpus + SSM + least-privilege IAM + container Lambda behind a Function URL
-make destroy    # removes everything; the bucket is auto-emptied first
+make deploy     # AgentCore Memory + IAM role + image + Runtime + Endpoint
+make destroy    # removes everything (Memory has RemovalPolicy.DESTROY)
 ```
 
-`make deploy` prints an **`ApiUrl`** — a Lambda Function URL serving this same app.
-It's **`AWS_IAM`-authed** (a leaked URL can't run up a Bedrock bill), so call it
-with SigV4-signed requests:
+Invoke the deployed runtime with an IAM-signed `InvokeAgentRuntime` call. The
+script discovers the runtime ARN from the stack output and, with no argument, runs
+a **two-turn memory demo** — the follow-up resolves only because AgentCore Memory
+supplies the prior turn:
 
 ```bash
-python scripts/call_api.py "What is the legal standard for a motion to dismiss?"
-# or with awscurl:
-awscurl --service lambda --region us-east-1 -X POST -H 'content-type: application/json' \
-  -d '{"question":"..."}' "$API_URL/v1/query"
+python scripts/invoke_agentcore.py                       # 2-turn multi-turn demo
+python scripts/invoke_agentcore.py "your legal question"
 ```
 
-Runtime, cost, the arm64 + Web-Adapter details, and `-c auth=none` for a public
-demo endpoint: [`infra/README.md`](infra/README.md).
+Prerequisites: one-time Bedrock model access in the console, and Docker running
+for the image build. IAM, runtime, and cost details:
+[`infra/README.md`](infra/README.md).
 
 ---
 
@@ -315,21 +333,23 @@ CourtListener / Caselaw Access Project (US case law), govinfo / US Code
 
 ## Scope & status
 
-**Live today** — build-order steps 1–4 (a grounded, citation-verified workflow)
-with the full engineering scaffold (config, logging, guardrails, tests, eval,
-Docker, CDK), **deployed on AWS**:
+**Live today** — a grounded, citation-verified workflow with the full engineering
+scaffold (config, logging, guardrails, tests, eval, Docker, CDK), **deployed on the
+AWS agent stack**:
 
-- **Tier 1 — real model:** planner + drafter run on **Amazon Bedrock** (Claude
-  Haiku 4.5, pay-per-call), verified end-to-end.
-- **Tier 2 — serverless API:** the FastAPI app runs as a **container Lambda behind
-  a Function URL** (AWS Lambda Web Adapter, arm64/Graviton), corpus in S3, config
-  in SSM, least-privilege IAM — all via CDK, fully destroyable. Live `/v1/query`
-  returns citation-verified answers.
+- **Framework — Strands Agents SDK:** planner and drafter are Strands `Agent`s with
+  native `BedrockModel` + structured output; retrieval is a `@tool`; monitoring is
+  a Strands hook.
+- **Model — Amazon Bedrock:** Claude Haiku 4.5, pay-per-call, verified end-to-end.
+- **Runtime — Bedrock AgentCore:** deployed on **AgentCore Runtime** (ARM64
+  container) with **AgentCore Memory** for multi-turn conversation — provisioned
+  entirely by CDK (`AWS::BedrockAgentCore::{Memory,Runtime,RuntimeEndpoint}`).
 
-Built on the **Strands Agents SDK** (planner/drafter as Strands `Agent`s, retrieval
-as a `@tool`, monitoring via a Strands hook), served on the container Lambda.
+An earlier **Lambda Function URL** deployment (container Lambda + AWS Lambda Web
+Adapter, no memory) is preserved on the
+[`lambda-function-url`](../../tree/lambda-function-url) branch.
 
-Deliberately **not** yet built (additive): deploying on Bedrock **AgentCore Runtime**,
-exposing tools over **MCP**, SQS/SNS tool integrations, OpenTelemetry export +
-dashboard, an LLM-as-judge answer eval, a CI regression gate on the eval metrics,
-and a real (CourtListener / CAP / CUAD) corpus in place of the fixture set.
+Deliberately **not** yet built (additive): exposing tools over **MCP** / AgentCore
+Gateway, OpenTelemetry export + dashboard, an LLM-as-judge answer eval, a CI
+regression gate on the eval metrics, and a real (CourtListener / CAP / CUAD) corpus
+in place of the fixture set.
