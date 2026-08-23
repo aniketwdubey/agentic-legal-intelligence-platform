@@ -14,7 +14,7 @@ from strands.models import Model
 
 from legalintel.agents.hooks import LoggingHook
 from legalintel.agents.planner.prompt import PLANNER_SYSTEM, planner_prompt
-from legalintel.agents.planner.schema import Plan, PlanStep
+from legalintel.agents.planner.schema import Plan
 from legalintel.schemas import QueryRequest
 
 log = structlog.get_logger("agent.planner")
@@ -39,14 +39,12 @@ class PlannerAgent:
             structured_output_model=Plan,
         )
         plan = result.structured_output
-        assert isinstance(plan, Plan)  # structured_output_model guarantees the type
-        # Guardrail: every plan must end with a validate step, whatever the model proposed.
-        if PlanStep.VALIDATE not in plan.steps:
-            plan = plan.model_copy(update={"steps": [*plan.steps, PlanStep.VALIDATE]})
+        if not isinstance(plan, Plan):  # defensive: structured output can be absent
+            raise RuntimeError("planner returned no Plan")
         log.info(
             "planner.plan",
             task_type=plan.task_type.value,
-            steps=[s.value for s in plan.steps],
+            jurisdiction=plan.jurisdiction,
             queries=plan.search_queries,
         )
         return plan

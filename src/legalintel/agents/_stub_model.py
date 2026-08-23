@@ -24,7 +24,7 @@ from typing import Any
 from strands.models import Model
 
 from legalintel.agents.drafting.schema import Claim, DraftAnswer
-from legalintel.agents.planner.schema import Plan, PlanStep
+from legalintel.agents.planner.schema import Plan
 
 _DRAFT_KEYWORDS = ("draft", "write", "prepare", "nda", "agreement", "clause")
 _REVIEW_KEYWORDS = ("review", "flag", "risky", "redline", "risk")
@@ -57,7 +57,11 @@ class StubModel(Model):
         """Emulate a forced structured-output tool call as a Bedrock-style stream."""
         if not tool_specs:
             raise NotImplementedError("StubModel only supports structured-output tool calls")
-        spec = tool_specs[0]
+        # Pick the structured-output tool by name, so an unrelated tool attached to
+        # the agent doesn't shadow it at index 0.
+        spec = next(
+            (s for s in tool_specs if s.get("name") in ("Plan", "DraftAnswer")), tool_specs[0]
+        )
         name = spec["name"]
         instance = self._build(name, _flatten(messages))
         payload = json.dumps(instance.model_dump(mode="json"))
@@ -106,7 +110,6 @@ class StubModel(Model):
             task_type=task_type,  # type: ignore[arg-type]  # str coerces to TaskType
             jurisdiction=jur if jur != "unknown" else "US",
             search_queries=[question or text],
-            steps=[PlanStep.RETRIEVE, PlanStep.DRAFT, PlanStep.VALIDATE],
             rationale=f"Interpreted request as {task_type}; retrieve, then ground and verify.",
         )
 

@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # more headroom. Requires one-time Bedrock model-access approval in the console.
     bedrock_model_id: str = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     bedrock_embed_model_id: str = "amazon.titan-embed-text-v2:0"
+    # Cap on model output tokens. Large enough that a multi-claim draft or
+    # doc-review does not truncate the structured tool-use JSON mid-object.
+    bedrock_max_tokens: int = Field(default=4096, ge=256, le=8192)
 
     # --- Embedder ----------------------------------------------------------
     embedder: Embedder = "hashing"
@@ -54,8 +57,8 @@ class Settings(BaseSettings):
     grounding_threshold: float = Field(default=0.18, ge=0.0, le=1.0)
 
     # --- Reliability guardrails -------------------------------------------
+    # Request read-timeout passed through to Bedrock; Strands owns model retries.
     llm_timeout_seconds: float = Field(default=30.0, gt=0)
-    llm_max_retries: int = Field(default=3, ge=0, le=10)
 
     # --- Observability -----------------------------------------------------
     log_format: LogFormat = "console"

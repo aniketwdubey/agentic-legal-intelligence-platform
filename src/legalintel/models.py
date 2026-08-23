@@ -28,6 +28,7 @@ def build_model(settings: Settings) -> Model:
         return BedrockModel(
             model_id=settings.bedrock_model_id,
             region_name=settings.aws_region,
+            max_tokens=settings.bedrock_max_tokens,
             boto_client_config=Config(read_timeout=int(settings.llm_timeout_seconds) + 5),
         )
 

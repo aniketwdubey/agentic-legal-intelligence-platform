@@ -9,10 +9,10 @@ via its structured-output tool spec, so the prompt does not restate the schema.
 from __future__ import annotations
 
 PLANNER_SYSTEM = """You are the planning agent of a legal-intelligence platform.
-Interpret the user's request at runtime and decompose it. Choose task_type from
-[research, drafting, doc_review], the jurisdiction, one or more search_queries to
-retrieve authority, and the ordered steps from [retrieve, draft, validate]. Every
-task must end with a validate step. Do not assert any legal proposition here."""
+Interpret the user's request at runtime. Choose task_type from
+[research, drafting, doc_review], the jurisdiction, and one or more search_queries
+that will retrieve the authority needed to answer it. Do not assert any legal
+proposition here."""
 
 
 def planner_prompt(question: str, jurisdiction: str | None) -> str:

@@ -43,6 +43,7 @@ class DraftingAgent:
             structured_output_model=DraftAnswer,
         )
         draft = result.structured_output
-        assert isinstance(draft, DraftAnswer)
+        if not isinstance(draft, DraftAnswer):  # defensive: structured output can be absent
+            raise RuntimeError("drafter returned no DraftAnswer")
         log.info("drafting.done", claims=len(draft.claims))
         return draft

@@ -41,6 +41,11 @@ log = structlog.get_logger("supervisor")
 # Below this mean support score we escalate rather than answer outright.
 _LOW_CONFIDENCE = 0.35
 
+# Exceptions that signal a programming bug rather than an operational failure. We
+# let these propagate (surfacing a 500 + traceback) instead of masking them as a
+# routine escalation, so defects don't hide behind a normal-looking response.
+_BUG_EXCEPTIONS = (NameError, ImportError, AttributeError, TypeError, KeyError, IndexError)
+
 
 @dataclass
 class StepRecord:
@@ -80,9 +85,12 @@ class Supervisor:
         bind_run(trace_id=state.trace_id)
         try:
             return self._run(request, state)
+        except _BUG_EXCEPTIONS:
+            # A defect, not an outage — let it surface loudly rather than hide it.
+            raise
         except Exception as exc:
-            # Safety net: any agent/model failure degrades to human review — the
-            # platform never returns an unverified answer or a 500 with legal text.
+            # Operational failure (model/network/timeout): degrade to human review —
+            # the platform never returns an unverified answer or a 500 with legal text.
             log.error("supervisor.pipeline_failure", error=str(exc), exc_info=True)
             state.record("supervisor", ok=False, detail=f"error: {exc}")
             return QueryResponse(
