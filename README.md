@@ -27,9 +27,9 @@ Built as an independent portfolio project on public legal data only.
    ┌──────────┴─────────┐                            │
    ▼                    ▼                            ▼
 Planner ──► Plan    Retrieval ──► RetrievedAuthority[]   Drafting ──► DraftAnswer
-(intent,            (hybrid BM25 + dense,                (claims grounded ONLY in
- queries,            RRF-style fusion over               retrieved authority)
- steps)              the legal corpus)                        │
+(task_type,         (hybrid BM25 + dense,                (claims grounded ONLY in
+ jurisdiction,       min-max fused over                  retrieved authority)
+ queries)            the legal corpus)                         │
                                                               ▼
                                              Validation (RULE-BASED, not an LLM)
                                              ├─ citation_exists? (in retrieved set)
@@ -54,7 +54,7 @@ opaque prompt chain.
 
 | Agent | Input → Output | LLM? | Responsibility |
 |---|---|---|---|
-| **Planner** (Strands `Agent`) | `QueryRequest` → `Plan` | ✅ | Interprets intent at runtime — classifies `task_type` (research / drafting / doc_review), picks the jurisdiction, one or more `search_queries`, and the ordered `steps`. Asserts no legal proposition itself. |
+| **Planner** (Strands `Agent`) | `QueryRequest` → `Plan` | ✅ | Interprets intent at runtime — classifies `task_type` (research / drafting / doc_review), the jurisdiction, and one or more `search_queries`. Asserts no legal proposition itself. (The `retrieve → draft → validate` sequence is a **fixed** pipeline the supervisor always runs, not chosen per request — see the note below.) |
 | **Retrieval** (Strands `@tool`) | `list[str]` → `RetrievedAuthority[]` | ❌ | Runs each query through hybrid search (BM25 + dense embeddings) over the corpus, min-max fuses the two legs, and returns the top-k authorities with scores. Decoupled — takes plain queries, not a `Plan`. Pure-Python, no search service. |
 | **Drafting** (Strands `Agent`) | question + `RetrievedAuthority[]` → `DraftAnswer` | ✅ | Composes the answer as a set of `claims`, each carrying an `authority_id` from the retrieved set and a **verbatim quote** copied from that authority's text. Insufficient context → empty claim list (→ abstention). |
 | **Validation** (`validate()`) | `DraftAnswer` + `RetrievedAuthority[]` → `ValidationReport` | ❌ **rule-based** | Independently verifies each claim: (1) `citation_exists` — the `authority_id` is in the retrieved set; (2) the quote is a real span of that authority; (3) the claim is grounded above `grounding_threshold`. Emits per-claim verdicts + support scores. |
@@ -62,7 +62,15 @@ opaque prompt chain.
 
 ### Supervisor control & grounding policy
 
-The supervisor is a thin, explicit state machine — not a prompt. On every hop it:
+The pipeline is a **fixed, deterministic sequence** — `plan → retrieve → draft →
+validate → policy` — run by the supervisor in plain Python, *not* a step list the
+model chooses. That's a deliberate design choice: the citation-verification
+guarantee depends on validating the draft against the **exact** authority set that
+was retrieved, so the control flow can't be left to an LLM. The planner shapes
+*what* is retrieved (`task_type`, `search_queries`); the supervisor owns *how* the
+steps run. (`Plan.steps` is descriptive metadata today, not a control input.)
+
+On every hop the supervisor:
 
 - **Validates at the boundary.** Each agent output is parsed into its pydantic
   schema, so a malformed LLM response is caught *where it was produced*, not
