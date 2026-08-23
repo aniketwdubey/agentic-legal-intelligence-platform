@@ -80,11 +80,13 @@ class Supervisor:
         self.drafting = drafting
         self._threshold = grounding_threshold
 
-    def run(self, request: QueryRequest) -> QueryResponse:
+    def run(
+        self, request: QueryRequest, history: list[tuple[str, str]] | None = None
+    ) -> QueryResponse:
         state = WorkflowState(trace_id=uuid.uuid4().hex[:12])
         bind_run(trace_id=state.trace_id)
         try:
-            return self._run(request, state)
+            return self._run(request, state, history)
         except _BUG_EXCEPTIONS:
             # A defect, not an outage — let it surface loudly rather than hide it.
             raise
@@ -103,8 +105,13 @@ class Supervisor:
             clear_run()
 
     # -- pipeline ----------------------------------------------------------
-    def _run(self, request: QueryRequest, state: WorkflowState) -> QueryResponse:
-        plan = self.planner.run(request)
+    def _run(
+        self,
+        request: QueryRequest,
+        state: WorkflowState,
+        history: list[tuple[str, str]] | None = None,
+    ) -> QueryResponse:
+        plan = self.planner.run(request, history)
         state.record("planner", ok=True, detail=plan.task_type.value)
 
         retrieved: list[RetrievedAuthority] = self.retrieve(plan.search_queries)

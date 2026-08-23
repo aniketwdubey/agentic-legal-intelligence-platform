@@ -27,6 +27,9 @@ infra = [
     "aws-cdk-lib>=2.140",
     "constructs>=10.3",
 ]
+agentcore = [
+    "bedrock-agentcore>=1.2,<2",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

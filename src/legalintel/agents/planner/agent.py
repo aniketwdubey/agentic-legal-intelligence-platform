@@ -26,7 +26,9 @@ class PlannerAgent:
     def __init__(self, model: Model) -> None:
         self._model = model
 
-    def run(self, request: QueryRequest) -> Plan:
+    def run(
+        self, request: QueryRequest, history: list[tuple[str, str]] | None = None
+    ) -> Plan:
         agent = Agent(
             model=self._model,
             system_prompt=PLANNER_SYSTEM,
@@ -35,7 +37,7 @@ class PlannerAgent:
             callback_handler=None,  # no stdout streaming; we log via the hook
         )
         result = agent(
-            planner_prompt(request.question, request.jurisdiction),
+            planner_prompt(request.question, request.jurisdiction, history),
             structured_output_model=Plan,
         )
         plan = result.structured_output

@@ -15,9 +15,20 @@ that will retrieve the authority needed to answer it. Do not assert any legal
 proposition here."""
 
 
-def planner_prompt(question: str, jurisdiction: str | None) -> str:
+def planner_prompt(
+    question: str,
+    jurisdiction: str | None,
+    history: list[tuple[str, str]] | None = None,
+) -> str:
+    convo = ""
+    if history:
+        lines = "\n".join(f"{role}: {text}" for role, text in history)
+        convo = (
+            "CONVERSATION so far (resolve any follow-up references in the question "
+            f"against this history):\n{lines}\n"
+        )
     return (
-        f"QUESTION: {question}\n"
+        f"{convo}QUESTION: {question}\n"
         f"JURISDICTION_HINT: {jurisdiction or 'unknown'}\n"
         "Produce the plan."
     )
