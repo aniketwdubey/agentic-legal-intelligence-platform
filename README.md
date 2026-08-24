@@ -157,6 +157,15 @@ agent is a stateless single-shot. Provisioned entirely by CDK — see
   so follow-up questions resolve. Memory is a *real* capability the deployment
   uses — not a hollow keyword — and the whole thing is native CDK
   (`AWS::BedrockAgentCore::{Memory,Runtime,RuntimeEndpoint}`).
+- **Defense in depth — two independent safety layers.** A **Bedrock Guardrail**
+  (prompt-injection / `PROMPT_ATTACK` + PII redaction) applied on every model call
+  guards *safety*; the rule-based citation verification guards *grounding*. A
+  prompt-injection attempt is blocked → the agent abstains (*"blocked by the safety
+  guardrail"*) rather than complying.
+- **Automatic observability (OpenTelemetry).** The container is auto-instrumented
+  (`opentelemetry-instrument` + `aws-opentelemetry-distro`), so **AgentCore
+  Observability** captures traces/spans per model call and tool, token usage, and
+  per-session timelines in the CloudWatch GenAI dashboard — no manual tracing code.
 - **Cost-conscious AWS.** Bedrock and AgentCore Runtime are pay-per-call and scale
   to zero; the CDK stack adds only near-free storage (Memory + the ECR image), so
   it spins up and tears down cheaply. See [`infra/`](infra/README.md).
@@ -344,12 +353,16 @@ AWS agent stack**:
 - **Runtime — Bedrock AgentCore:** deployed on **AgentCore Runtime** (ARM64
   container) with **AgentCore Memory** for multi-turn conversation — provisioned
   entirely by CDK (`AWS::BedrockAgentCore::{Memory,Runtime,RuntimeEndpoint}`).
+- **Safety — Bedrock Guardrails:** prompt-injection + PII filtering on every model
+  call, alongside the rule-based grounding gate.
+- **Observability — AgentCore Observability:** OTEL auto-instrumentation → traces,
+  spans, token usage, and session timelines in CloudWatch GenAI Observability.
 
 An earlier **Lambda Function URL** deployment (container Lambda + AWS Lambda Web
 Adapter, no memory) is preserved on the
 [`lambda-function-url`](../../tree/lambda-function-url) branch.
 
 Deliberately **not** yet built (additive): exposing tools over **MCP** / AgentCore
-Gateway, OpenTelemetry export + dashboard, an LLM-as-judge answer eval, a CI
-regression gate on the eval metrics, and a real (CourtListener / CAP / CUAD) corpus
-in place of the fixture set.
+Gateway, a CloudWatch **dashboard + alarms** on the OTEL metrics, an LLM-as-judge
+answer eval, a CI regression gate on the eval metrics, and a real (CourtListener /
+CAP / CUAD) corpus in place of the fixture set.

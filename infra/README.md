@@ -9,10 +9,11 @@ always-on compute.
 | Resource | Purpose | Cost |
 |---|---|---|
 | `AWS::BedrockAgentCore::Memory` | Short-term, per-session conversation history (multi-turn) | ~cents/mo storage |
+| `AWS::Bedrock::Guardrail` (+ Version) | Prompt-injection (`PROMPT_ATTACK`) + PII filtering on every model call | free (per-unit at call time) |
 | Docker image asset (ARM64) | The agent container (`Dockerfile.agentcore`), built + pushed by CDK | ~cents/mo in ECR |
 | IAM role | Least-privilege execution role the runtime assumes | free |
 | `AWS::BedrockAgentCore::Runtime` | Hosts the agent container (HTTP protocol, `/ping` + `/invocations`) | per-request only |
-| `AWS::BedrockAgentCore::RuntimeEndpoint` | Makes the runtime invocable (`InvokeAgentRuntime`) | free |
+| `AWS::BedrockAgentCore::RuntimeEndpoint` | Makes the runtime invocable (`InvokeAgentRuntime`) — pinned to the runtime's current version so deploys roll forward | free |
 
 **Not created** (the expensive stuff): OpenSearch, RDS, NAT gateways, always-on
 compute. Bedrock and AgentCore Runtime are **pay-per-call** and scale to zero, so
@@ -36,6 +37,23 @@ The runtime assumes an IAM role scoped to exactly what the agent needs:
 
 The trust policy allows `bedrock-agentcore.amazonaws.com` with `aws:SourceAccount`
 + `aws:SourceArn` conditions (confused-deputy protection).
+
+## Guardrails & observability
+
+- **Guardrail:** a Bedrock Guardrail (`PROMPT_ATTACK` HIGH on input + PII redaction)
+  is applied on every model call via Strands (`guardrail_id`/`guardrail_version`).
+  A prompt-injection attempt is blocked and the agent abstains.
+- **Observability:** the image runs under `opentelemetry-instrument` with
+  `aws-opentelemetry-distro`, so AgentCore auto-instruments Strands/Bedrock/tool
+  calls to **CloudWatch GenAI Observability** (traces, spans, tokens, sessions).
+  One-time per account, enable **CloudWatch Transaction Search** so spans are
+  searchable:
+
+  ```bash
+  aws xray update-trace-segment-destination --destination CloudWatchLogs --region us-east-1
+  # + a CloudWatch Logs resource policy allowing xray.amazonaws.com to PutLogEvents
+  #   on the aws/spans and /aws/application-signals/data log groups.
+  ```
 
 ## Prerequisites
 
