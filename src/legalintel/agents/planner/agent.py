@@ -12,6 +12,7 @@ import structlog
 from strands import Agent
 from strands.models import Model
 
+from legalintel.agents.errors import GuardrailBlocked
 from legalintel.agents.hooks import LoggingHook
 from legalintel.agents.planner.prompt import PLANNER_SYSTEM, planner_prompt
 from legalintel.agents.planner.schema import Plan
@@ -40,9 +41,13 @@ class PlannerAgent:
             planner_prompt(request.question, request.jurisdiction, history),
             structured_output_model=Plan,
         )
+        if result.stop_reason in ("guardrail_intervened", "content_filtered"):
+            raise GuardrailBlocked(
+                f"planner input blocked by the safety guardrail ({result.stop_reason})"
+            )
         plan = result.structured_output
-        if not isinstance(plan, Plan):  # defensive: structured output can be absent
-            raise RuntimeError("planner returned no Plan")
+        if not isinstance(plan, Plan):  # no tool call produced (blocked or refused)
+            raise GuardrailBlocked(f"planner produced no plan (stop_reason={result.stop_reason})")
         log.info(
             "planner.plan",
             task_type=plan.task_type.value,

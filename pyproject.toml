@@ -29,6 +29,8 @@ infra = [
 ]
 agentcore = [
     "bedrock-agentcore>=1.2,<2",
+    # ADOT auto-instrumentation → AgentCore/CloudWatch OTEL traces + spans.
+    "aws-opentelemetry-distro>=0.10",
 ]
 
 [build-system]

@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     # Cap on model output tokens. Large enough that a multi-claim draft or
     # doc-review does not truncate the structured tool-use JSON mid-object.
     bedrock_max_tokens: int = Field(default=4096, ge=256, le=8192)
+    # Optional Bedrock Guardrail applied on every model call (prompt-injection +
+    # PII). Empty = no guardrail (local/offline). Set by the CDK stack in prod.
+    bedrock_guardrail_id: str = ""
+    bedrock_guardrail_version: str = ""
 
     # --- Embedder ----------------------------------------------------------
     embedder: Embedder = "hashing"

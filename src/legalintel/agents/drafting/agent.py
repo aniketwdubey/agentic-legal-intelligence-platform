@@ -14,6 +14,7 @@ from strands.models import Model
 
 from legalintel.agents.drafting.prompt import DRAFTER_SYSTEM, drafter_prompt
 from legalintel.agents.drafting.schema import DraftAnswer
+from legalintel.agents.errors import GuardrailBlocked
 from legalintel.agents.hooks import LoggingHook
 from legalintel.schemas import RetrievedAuthority
 
@@ -42,8 +43,12 @@ class DraftingAgent:
             drafter_prompt(question, retrieved),
             structured_output_model=DraftAnswer,
         )
+        if result.stop_reason in ("guardrail_intervened", "content_filtered"):
+            raise GuardrailBlocked(
+                f"drafter output blocked by the safety guardrail ({result.stop_reason})"
+            )
         draft = result.structured_output
-        if not isinstance(draft, DraftAnswer):  # defensive: structured output can be absent
-            raise RuntimeError("drafter returned no DraftAnswer")
+        if not isinstance(draft, DraftAnswer):  # no tool call produced (blocked or refused)
+            raise GuardrailBlocked(f"drafter produced no answer (stop_reason={result.stop_reason})")
         log.info("drafting.done", claims=len(draft.claims))
         return draft

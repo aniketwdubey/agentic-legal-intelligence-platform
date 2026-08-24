@@ -32,4 +32,6 @@ ENV PATH="/opt/venv/bin:$PATH" \
 USER appuser
 EXPOSE 8080
 # AgentCore terminates TLS and routes to the container internally on 8080.
-CMD ["python", "agentcore_app.py"]
+# `opentelemetry-instrument` auto-instruments Strands + Bedrock + tool calls and
+# exports OTEL traces/spans to AgentCore Observability → CloudWatch.
+CMD ["opentelemetry-instrument", "python", "agentcore_app.py"]

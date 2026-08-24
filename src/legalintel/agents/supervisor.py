@@ -20,6 +20,7 @@ from typing import Any
 import structlog
 
 from legalintel.agents.drafting import DraftingAgent
+from legalintel.agents.errors import GuardrailBlocked
 from legalintel.agents.planner import PlannerAgent
 from legalintel.agents.retrieval import make_retrieve_tool
 from legalintel.agents.validation import ClaimVerdict, ValidationReport, validate
@@ -87,6 +88,17 @@ class Supervisor:
         bind_run(trace_id=state.trace_id)
         try:
             return self._run(request, state, history)
+        except GuardrailBlocked as exc:
+            # The safety guardrail intervened (prompt injection / unsafe content).
+            log.info("supervisor.guardrail_blocked", detail=str(exc))
+            state.record("guardrail", ok=False, detail="blocked")
+            return QueryResponse(
+                status=Status.ABSTAINED,
+                trace_id=state.trace_id,
+                abstention_reason="request blocked by the safety guardrail "
+                "(possible prompt injection or unsafe content)",
+                steps_run=[s.agent for s in state.steps],
+            )
         except _BUG_EXCEPTIONS:
             # A defect, not an outage — let it surface loudly rather than hide it.
             raise
