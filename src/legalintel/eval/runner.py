@@ -24,15 +24,12 @@ from legalintel.eval.metrics import (
     hallucination_rate,
     recall_at_k,
 )
-from legalintel.logging import configure_logging
 from legalintel.retrieval import HybridRetriever, load_corpus
 from legalintel.schemas import QueryRequest, Status
 
 
 def run_eval(golden_path: str) -> EvalSummary:
     settings = get_settings()
-    configure_logging(settings)
-
     corpus = load_corpus(settings)
     retriever = HybridRetriever(corpus, settings)
     supervisor = build_supervisor(settings)

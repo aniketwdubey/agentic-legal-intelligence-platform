@@ -22,7 +22,6 @@ def settings() -> Settings:
         corpus_dir=str(FIXTURE_CORPUS),
         retrieval_top_k=5,
         grounding_threshold=0.18,
-        log_format="console",
     )
 
 

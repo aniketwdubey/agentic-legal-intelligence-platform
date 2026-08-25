@@ -15,7 +15,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LLMProvider = Literal["mock", "bedrock"]
 Embedder = Literal["hashing", "bedrock"]
-LogFormat = Literal["json", "console"]
 
 
 class Settings(BaseSettings):
@@ -63,10 +62,6 @@ class Settings(BaseSettings):
     # --- Reliability guardrails -------------------------------------------
     # Request read-timeout passed through to Bedrock; Strands owns model retries.
     llm_timeout_seconds: float = Field(default=30.0, gt=0)
-
-    # --- Observability -----------------------------------------------------
-    log_format: LogFormat = "console"
-    log_level: str = "INFO"
 
 
 @lru_cache(maxsize=1)

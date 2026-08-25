@@ -179,7 +179,6 @@ lives in that agent's folder.
 src/legalintel/
   config.py        pydantic-settings (env-driven, no secrets in code)
   models.py        build_model(): Strands BedrockModel | offline StubModel
-  logging.py       structlog config + per-run trace_id binding
   schemas.py       shared cross-cutting contracts (Authority, Query*, Status, TaskType)
   agents/
     supervisor.py  orchestration, grounding policy, confidence, trace

@@ -15,7 +15,6 @@ from fastapi import FastAPI
 
 from legalintel.agents import build_supervisor
 from legalintel.config import get_settings
-from legalintel.logging import configure_logging
 
 log = structlog.get_logger("api")
 
@@ -23,7 +22,6 @@ log = structlog.get_logger("api")
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
-    configure_logging(settings)
     log.info("api.startup", provider=settings.llm_provider, embedder=settings.embedder)
     # Build the pipeline once (corpus load + index) and reuse across requests.
     app.state.supervisor = build_supervisor(settings)

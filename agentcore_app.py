@@ -23,13 +23,11 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from legalintel.agents import build_supervisor
 from legalintel.config import get_settings
-from legalintel.logging import configure_logging
 from legalintel.schemas import QueryRequest
 
 log = structlog.get_logger("agentcore")
 
 _settings = get_settings()
-configure_logging(_settings)
 # Build the pipeline once (corpus load + index) and reuse across invocations.
 _supervisor = build_supervisor(_settings)
 

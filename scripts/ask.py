@@ -12,7 +12,6 @@ import sys
 
 from legalintel.agents import build_supervisor
 from legalintel.config import get_settings
-from legalintel.logging import configure_logging
 from legalintel.schemas import QueryRequest
 
 
@@ -22,7 +21,6 @@ def main(argv: list[str]) -> int:
         return 2
 
     settings = get_settings()
-    configure_logging(settings)
     supervisor = build_supervisor(settings)
     resp = supervisor.run(QueryRequest(question=" ".join(argv)))
 

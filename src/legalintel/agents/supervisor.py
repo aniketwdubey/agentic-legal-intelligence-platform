@@ -25,7 +25,6 @@ from legalintel.agents.planner import PlannerAgent
 from legalintel.agents.retrieval import make_retrieve_tool
 from legalintel.agents.validation import ClaimVerdict, ValidationReport, validate
 from legalintel.config import Settings
-from legalintel.logging import bind_run, clear_run
 from legalintel.models import build_model
 from legalintel.retrieval import HybridRetriever, load_corpus
 from legalintel.schemas import (
@@ -85,7 +84,6 @@ class Supervisor:
         self, request: QueryRequest, history: list[tuple[str, str]] | None = None
     ) -> QueryResponse:
         state = WorkflowState(trace_id=uuid.uuid4().hex[:12])
-        bind_run(trace_id=state.trace_id)
         try:
             return self._run(request, state, history)
         except GuardrailBlocked as exc:
@@ -113,8 +111,6 @@ class Supervisor:
                 abstention_reason="pipeline failure; routed to human review",
                 steps_run=[s.agent for s in state.steps],
             )
-        finally:
-            clear_run()
 
     # -- pipeline ----------------------------------------------------------
     def _run(
