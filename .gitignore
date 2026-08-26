@@ -27,3 +27,6 @@ infra/.venv/
 
 # OS
 .DS_Store
+
+# Local-only handoff/context doc (not committed)
+docs/PROJECT_CONTEXT.md

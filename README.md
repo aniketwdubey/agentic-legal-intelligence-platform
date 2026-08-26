@@ -19,6 +19,12 @@ Memory** (multi-turn), all via CDK.
 
 ## Architecture
 
+![AWS architecture — Strands + Bedrock + AgentCore Runtime & Memory](docs/architecture.jpg)
+
+*AWS deployment view. Editable source: [`docs/architecture.drawio`](docs/architecture.drawio).*
+
+The request pipeline the Runtime runs:
+
 ```
   QueryRequest(question)        conversation history (optional — supplied by
         │                        AgentCore Memory when deployed; see below)
